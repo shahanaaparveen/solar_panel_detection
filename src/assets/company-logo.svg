@@ -1,0 +1,18 @@
+<svg width="1280" height="720" viewBox="0 0 1280 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1280" height="720" fill="#E8E8E8"/>
+  <rect x="140" y="80" width="1000" height="220" rx="12" fill="#A8131D"/>
+  <g fill="#F3F3F3">
+    <rect x="270" y="120" width="210" height="52" rx="26"/>
+    <rect x="800" y="120" width="210" height="52" rx="26"/>
+    <path d="M310 220C345 150 390 120 440 120C490 120 535 150 570 220H310Z"/>
+    <path d="M710 220C745 150 790 120 840 120C890 120 935 150 970 220H710Z"/>
+    <path d="M500 220C520 190 545 150 590 150C640 150 665 190 685 220H500Z"/>
+    <path d="M595 220C610 175 660 145 710 145C760 145 800 175 820 220H595Z"/>
+  </g>
+
+  <g>
+    <text x="640" y="420" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="900" font-size="90" letter-spacing="4" fill="#0B2A5B">SRI ESHWAR</text>
+    <text x="640" y="560" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="900" font-size="150" letter-spacing="3" fill="#0B2A5B">DRONE TECH</text>
+    <text x="640" y="640" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="700" font-size="50" letter-spacing="1" fill="#0B2A5B">Sri Eshwar Drone Tech Pvt. Ltd.</text>
+  </g>
+</svg>
