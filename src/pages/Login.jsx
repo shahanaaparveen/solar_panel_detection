@@ -38,6 +38,7 @@ export default function Login({ onLogin }) {
             <div style={styles.inputWrap}>
               <User size={15} color="#64748b" style={styles.inputIcon} />
               <input
+                id="email-input"
                 style={styles.input}
                 placeholder="Enter your email"
                 value={form.email}
@@ -51,6 +52,7 @@ export default function Login({ onLogin }) {
             <div style={styles.inputWrap}>
               <Lock size={15} color="#64748b" style={styles.inputIcon} />
               <input
+                id="password-input"
                 style={{ ...styles.input, paddingRight: 40 }}
                 type={show ? 'text' : 'password'}
                 placeholder="Enter your password"
@@ -76,7 +78,7 @@ export default function Login({ onLogin }) {
             <span style={styles.forgot}>Forgot Password?</span>
           </div>
 
-          <button style={styles.loginBtn} onClick={onLogin}>Login</button>
+          <button id="login-btn" style={styles.loginBtn} onClick={onLogin}>Login</button>
 
           <p style={styles.signupText}>
             Don't have an account?{' '}
