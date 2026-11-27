@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
-import { ChevronLeft, ChevronRight, ArrowRight } from 'lucide-react';
-import { getDetections, IMAGE_BASE } from '../../api';
+import { ChevronLeft, ChevronRight, ArrowRight, Loader } from 'lucide-react';
+import { getAnalysisJob, getDetections, retryAnalysis, getProjectImageObjectUrl } from '../../api';
 
 // Draw bounding boxes + labels on canvas over the image
-function AnnotatedImage({ src, detections, width, height }) {
+function AnnotatedImage({ src, detections }) {
   const canvasRef = useRef();
 
   useEffect(() => {
@@ -69,22 +69,76 @@ export default function WorkflowAnalysis({ project, onNext }) {
   const [thermalUrls, setThermalUrls] = useState([]);
   const [rgbUrls, setRgbUrls]         = useState([]);
   const [tab, setTab]                 = useState('thermal');
+  const [job, setJob] = useState(null);
+  const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState('');
 
-  // Create local object URLs for uploaded files
+  // Prefer persisted uploads so the analysis view remains available after navigation.
   useEffect(() => {
-    const t = (project.thermalFiles || []).map(f => ({ url: URL.createObjectURL(f), name: f.name }));
-    const r = (project.rgbFiles     || []).map(f => ({ url: URL.createObjectURL(f), name: f.name }));
-    setThermalUrls(t);
-    setRgbUrls(r);
-    return () => { t.forEach(x => URL.revokeObjectURL(x.url)); r.forEach(x => URL.revokeObjectURL(x.url)); };
-  }, [project.thermalFiles, project.rgbFiles]);
+    let disposed = false;
+    const objectUrls = [];
+    const makeItems = async (records, localFiles) => {
+      if (records?.length) return Promise.all(records.map(async record => {
+        const url = await getProjectImageObjectUrl(project._id, record.imageId);
+        objectUrls.push(url);
+        return { url, name: record.imageName, imageId: record.imageId };
+      }));
+      return (localFiles || []).map(file => {
+        const url = URL.createObjectURL(file);
+        objectUrls.push(url);
+        return { url, name: file.name, local: true };
+      });
+    };
+    Promise.allSettled([makeItems(project.thermalImages, project.thermalFiles), makeItems(project.rgbImages, project.rgbFiles)])
+      .then(results => {
+        if (results.some(result => result.status === 'rejected')) throw results.find(result => result.status === 'rejected').reason;
+        const [thermal, rgb] = results.map(result => result.value);
+        if (disposed) objectUrls.forEach(URL.revokeObjectURL);
+        else { setThermalUrls(thermal); setRgbUrls(rgb); }
+      })
+      .catch(() => {
+        objectUrls.forEach(URL.revokeObjectURL);
+        objectUrls.length = 0;
+        if (!disposed) { setThermalUrls([]); setRgbUrls([]); }
+      });
+    return () => { disposed = true; objectUrls.forEach(URL.revokeObjectURL); };
+  }, [project._id, project.thermalImages, project.rgbImages, project.thermalFiles, project.rgbFiles]);
 
   // Fetch detections from MongoDB
   useEffect(() => {
     if (!project._id) return;
-    getDetections(project._id, 'thermal').then(setThermalData).catch(() => {});
-    getDetections(project._id, 'rgb').then(setRgbData).catch(() => {});
-  }, [project._id]);
+    getDetections(project._id, 'thermal', project.jobId).then(setThermalData).catch(() => setThermalData([]));
+    getDetections(project._id, 'rgb', project.jobId).then(setRgbData).catch(() => setRgbData([]));
+    if (project.jobId) getAnalysisJob(project._id, project.jobId).then(setJob).catch(() => setJob(null));
+  }, [project._id, project.jobId]);
+
+  const refreshResults = async () => {
+    const [thermal, rgb] = await Promise.all([
+      getDetections(project._id, 'thermal', project.jobId),
+      getDetections(project._id, 'rgb', project.jobId),
+    ]);
+    setThermalData(thermal);
+    setRgbData(rgb);
+  };
+
+  const retryIncomplete = async () => {
+    setRetrying(true);
+    setRetryError('');
+    try {
+      let current = await retryAnalysis(project._id, project.jobId);
+      setJob(current);
+      while (current.status === 'PENDING' || current.status === 'PROCESSING') {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        current = await getAnalysisJob(project._id, project.jobId);
+        setJob(current);
+      }
+      await refreshResults();
+    } catch (error) {
+      setRetryError(error.response?.data?.detail || error.message || 'Retry failed.');
+    } finally {
+      setRetrying(false);
+    }
+  };
 
   const currentList  = tab === 'thermal' ? thermalUrls : rgbUrls;
   const currentData  = tab === 'thermal' ? thermalData : rgbData;
@@ -93,12 +147,18 @@ export default function WorkflowAnalysis({ project, onNext }) {
   const currentItem  = currentList[currentIdx];
   const currentDet   = currentData[currentIdx];
 
-  const totalDefects = [...thermalData, ...rgbData].reduce((s, d) => s + (d.defectCount || 0), 0);
+  const totalDefects = [...thermalData, ...rgbData].filter(d => d.status === 'COMPLETED').reduce((s, d) => s + (d.defectCount || 0), 0);
+  const modelUnavailable = ['MODEL_UNAVAILABLE', 'MODEL_ERROR'].includes(currentDet?.status);
 
   return (
     <div>
       <div style={s.pageTitle}>Image Analysis — Defect Detection</div>
       <div style={s.pageSub}>All uploaded images with AI-detected defect annotations</div>
+      {job && <div role="status" style={{ ...s.jobNotice, borderColor: job.status === 'COMPLETED' ? '#14532d' : '#713f12' }}>
+        <span>Job {job.status} · {job.completedImages || 0}/{job.totalImages} images processed · {job.percentage || 0}%</span>
+        {['FAILED', 'PARTIALLY_COMPLETED'].includes(job.status) && <button style={s.btnNav} disabled={retrying} onClick={retryIncomplete}>{retrying ? <><Loader size={12} /> Retrying</> : 'Retry incomplete images'}</button>}
+      </div>}
+      {retryError && <div role="alert" style={{ color: '#f87171', marginBottom: 12, fontSize: 12 }}>{retryError}</div>}
 
       {/* Tabs */}
       <div style={s.tabs}>
@@ -139,8 +199,8 @@ export default function WorkflowAnalysis({ project, onNext }) {
               <div style={{ fontWeight: 600, fontSize: 13 }}>{currentItem.name}</div>
               <div style={{ fontSize: 11, color: '#64748b', marginTop: 2 }}>
                 {currentIdx + 1} / {currentList.length} &nbsp;·&nbsp;
-                <span style={{ color: currentDet?.defectCount > 0 ? '#ef4444' : '#22c55e' }}>
-                  {currentDet?.defectCount ?? 0} defect{currentDet?.defectCount !== 1 ? 's' : ''} detected
+                <span style={{ color: modelUnavailable ? '#f59e0b' : currentDet?.defectCount > 0 ? '#ef4444' : '#22c55e' }}>
+                  {modelUnavailable ? 'Model unavailable' : currentDet?.status === 'IMAGE_ERROR' ? 'Image processing failed' : currentDet?.status === 'COMPLETED' ? `${currentDet.defectCount} detections` : 'Awaiting analysis'}
                 </span>
               </div>
             </div>
@@ -152,9 +212,10 @@ export default function WorkflowAnalysis({ project, onNext }) {
           <AnnotatedImage
             src={currentItem.url}
             detections={currentDet?.detections || []}
-            width={currentDet?.imageWidth}
-            height={currentDet?.imageHeight}
           />
+          {modelUnavailable && <div role="status" style={{ color: '#fbbf24', padding: '10px 2px', fontSize: 12 }}>{currentDet.message || 'No trained model is configured for this modality.'}</div>}
+          {currentDet?.modelId && <div style={{ color: '#64748b', paddingTop: 8, fontSize: 11 }}>Model: {currentDet.modelId} · Version: {currentDet.modelVersion || 'unknown'} · {currentDet.inferenceMs ? `${currentDet.inferenceMs.toFixed(0)} ms` : 'inference unavailable'}</div>}
+          {tab === 'thermal' && currentDet?.thermalMetrics && <div style={{ color: '#64748b', paddingTop: 6, fontSize: 11 }}>{currentDet.thermalMetrics.status === 'RAW_PIXEL_STATISTICS' ? `Raw pixel values · min ${currentDet.thermalMetrics.minimum.toFixed(1)} · max ${currentDet.thermalMetrics.maximum.toFixed(1)} · mean ${currentDet.thermalMetrics.mean.toFixed(1)} (not calibrated temperature)` : 'Radiometric temperature data unavailable'}</div>}
 
           {/* Detections list for current image */}
           {currentDet?.detections?.length > 0 && (
@@ -163,7 +224,7 @@ export default function WorkflowAnalysis({ project, onNext }) {
                 <div key={i} style={{ ...s.detItem, borderLeft: `3px solid ${d.color}` }}>
                   <div style={{ width: 8, height: 8, borderRadius: '50%', background: d.color, flexShrink: 0 }} />
                   <span style={{ flex: 1, fontWeight: 500 }}>{d.label}</span>
-                  <span style={{ ...s.sevBadge, ...(d.severity === 'High' ? s.sevH : d.severity === 'Medium' ? s.sevM : s.sevL) }}>{d.severity}</span>
+                  <span style={{ ...s.sevBadge, ...(d.inspection_priority === 'High' ? s.sevH : d.inspection_priority === 'Medium' ? s.sevM : s.sevL) }}>{d.inspection_priority || 'Priority unassigned'}</span>
                   <span style={{ color: '#10b981', fontWeight: 600, fontSize: 12 }}>{Math.round(d.confidence * 100)}%</span>
                 </div>
               ))}
@@ -193,6 +254,7 @@ export default function WorkflowAnalysis({ project, onNext }) {
 const s = {
   pageTitle: { fontSize: 20, fontWeight: 700, marginBottom: 4 },
   pageSub: { fontSize: 13, color: '#64748b', marginBottom: 20 },
+  jobNotice: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12, background: '#111827', border: '1px solid', borderRadius: 8, color: '#cbd5e1', fontSize: 12, padding: '10px 12px', marginBottom: 14 },
   tabs: { display: 'flex', gap: 8, marginBottom: 16 },
   tab: { padding: '8px 20px', background: '#111827', border: '1px solid #1e2d45', borderRadius: 7, color: '#64748b', fontSize: 13, cursor: 'pointer', fontWeight: 500 },
   tabActive: { background: '#1a2740', color: '#e2e8f0', borderColor: '#6366f1' },

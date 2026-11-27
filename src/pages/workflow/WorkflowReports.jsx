@@ -1,25 +1,56 @@
-import { Download, FileText, ArrowLeft } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Download, ArrowLeft } from 'lucide-react';
+import { getFindings, getPanels, getReport, getProjectImageObjectUrl } from '../../api';
 
 export default function WorkflowReports({ project, onBackToProjects }) {
-  const defectRows = [
-    { panel: 'Panel-03', defect: 'Hotspot',          severity: 'High',   conf: 92 },
-    { panel: 'Panel-07', defect: 'Bird Droppings',   severity: 'Low',    conf: 88 },
-    { panel: 'Panel-12', defect: 'Loose Connection', severity: 'High',   conf: 91 },
-    { panel: 'Panel-18', defect: 'Reverse Bias',     severity: 'High',   conf: 87 },
-    { panel: 'Panel-24', defect: 'Leaf Shading',     severity: 'Low',    conf: 85 },
-    { panel: 'Panel-31', defect: 'Cracked Cell',     severity: 'High',   conf: 93 },
-  ];
+  const [defectRows, setDefectRows] = useState([]);
+  const [panelCount, setPanelCount] = useState(0);
+  const [report, setReport] = useState(null);
+  const [evidenceUrls, setEvidenceUrls] = useState({});
+  useEffect(() => {
+    if (!project._id) return;
+    getReport(project._id).then(async saved => {
+      setReport(saved);
+      if (saved.findings) {
+        setDefectRows(saved.findings);
+        setPanelCount((saved.imageResults || []).reduce((n, row) => n + (row.panelCount || 0), 0));
+        return;
+      }
+      const [rows, panels] = await Promise.all([
+        getFindings(project._id, saved.jobId || project.jobId),
+        getPanels(project._id),
+      ]);
+      setDefectRows(rows);
+      setPanelCount(panels.reduce((n, row) => n + (row.panels?.length || 0), 0));
+    }).catch(() => {
+      setReport(null);
+      getFindings(project._id, project.jobId).then(setDefectRows).catch(() => setDefectRows([]));
+      setPanelCount(0);
+    });
+  }, [project._id, project.jobId]);
+  useEffect(() => {
+    let disposed = false;
+    const urls = [];
+    const imageIds = [...new Set(defectRows.flatMap(finding => (finding.evidence || []).map(item => item.imageId).filter(Boolean)))];
+    Promise.allSettled(imageIds.map(async imageId => {
+      const url = await getProjectImageObjectUrl(project._id, imageId);
+      urls.push([imageId, url]);
+    })).then(() => {
+      if (disposed) urls.forEach(([, url]) => URL.revokeObjectURL(url));
+      else setEvidenceUrls(Object.fromEntries(urls));
+    });
+    return () => { disposed = true; urls.forEach(([, url]) => URL.revokeObjectURL(url)); };
+  }, [project._id, defectRows]);
 
   return (
     <div>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 20 }}>
         <div>
           <div style={s.pageTitle}>Reports</div>
-          <div style={s.pageSub}>Final inspection report for {project.projectName}</div>
+          <div style={s.pageSub}>Inspection report for {project.projectName}{report ? ` · ${report.status} · Saved ${new Date(report.createdAt).toLocaleString()}` : ' · Not saved yet'}</div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
-          <button style={s.btnPdf}><Download size={13} /> Export PDF</button>
-          <button style={s.btnWord}><FileText size={13} /> Export Word</button>
+          <button style={s.btnPdf} onClick={() => window.print()}><Download size={13} /> Print / Save PDF</button>
         </div>
       </div>
 
@@ -33,7 +64,7 @@ export default function WorkflowReports({ project, onBackToProjects }) {
             { label: 'Location',   value: project.location },
             { label: 'Inspector',  value: project.inspectorName },
             { label: 'Date',       value: project.date },
-            { label: 'Status',     value: project.status },
+            { label: 'Report Status', value: report?.status || project.status },
           ].map(f => (
             <div key={f.label} style={s.infoCell}>
               <div style={s.infoLabel}>{f.label}</div>
@@ -46,10 +77,10 @@ export default function WorkflowReports({ project, onBackToProjects }) {
       {/* Stats */}
       <div style={s.statsRow}>
         {[
-          { label: 'Thermal Images',   value: project.thermalFiles?.length || 0 },
-          { label: 'RGB Images',       value: project.rgbFiles?.length || 0 },
-          { label: 'Panels Detected',  value: project.rgbResults?.reduce((s, r) => s + r.panels.length, 0) || 0 },
-          { label: 'Defects Found',    value: defectRows.length },
+          { label: 'Thermal Images',   value: project.thermalImages?.length || 0 },
+          { label: 'RGB Images',       value: project.rgbImages?.length || 0 },
+          { label: 'Panel Observations', value: panelCount },
+          { label: 'Finding Observations', value: defectRows.length },
         ].map(st => (
           <div key={st.label} style={s.statCard}>
             <div style={s.statVal}>{st.value}</div>
@@ -63,28 +94,28 @@ export default function WorkflowReports({ project, onBackToProjects }) {
         <div style={s.cardTitle}>Defect Report</div>
         <table style={s.table}>
           <thead>
-            <tr>{['S.No', 'Panel No.', 'Defect Type', 'Severity', 'Confidence', 'Recommendation'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+            <tr>{['S.No', 'Panel No.', 'Defect Type', 'Inspection Priority', 'Confidence', 'Recommendation', 'Evidence'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {defectRows.map((r, i) => (
               <tr key={i}>
                 <td style={s.td}>{i + 1}</td>
-                <td style={s.td}><span style={s.panelBadge}>{r.panel}</span></td>
-                <td style={s.td}>{r.defect}</td>
-                <td style={s.td}><span style={{ ...s.sev, ...(r.severity === 'High' ? s.sevH : s.sevL) }}>{r.severity}</span></td>
-                <td style={{ ...s.td, color: '#10b981', fontWeight: 600 }}>{r.conf}%</td>
-                <td style={{ ...s.td, color: '#64748b', fontSize: 12 }}>
-                  {r.severity === 'High' ? '⚠ Immediate maintenance required' : '✓ Monitor periodically'}
-                </td>
+                <td style={s.td}><span style={s.panelBadge}>{r.panelId || r.matchStatus || 'Unassigned'}</span></td>
+                <td style={s.td}>{r.defectType} ({r.modality})</td>
+                <td style={s.td}><span style={{ ...s.sev, ...(r.inspectionPriority === 'High' ? s.sevH : s.sevL) }}>{r.inspectionPriority || 'Unassigned'} · unvalidated severity</span></td>
+                <td style={{ ...s.td, color: '#10b981', fontWeight: 600 }}>{Math.round((r.modelConfidence || 0) * 100)}%</td>
+                <td style={{ ...s.td, color: '#64748b', fontSize: 12 }}>{r.recommendation}{r.reviewRequired ? ' · Review required' : ''}</td>
+                <td style={s.td}>{evidenceUrls[r.evidence?.[0]?.imageId] ? <img src={evidenceUrls[r.evidence[0].imageId]} alt={`${r.defectType} evidence`} style={{ width: 84, height: 54, objectFit: 'cover' }} /> : '—'}</td>
               </tr>
             ))}
+            {!defectRows.length && <tr><td colSpan={7} style={s.td}>No model findings are available for this project.</td></tr>}
           </tbody>
         </table>
       </div>
 
       <div style={s.footer}>
         <button style={s.btnBack} onClick={onBackToProjects}><ArrowLeft size={13} /> Back to Projects</button>
-        <span style={{ fontSize: 13, color: '#22c55e', fontWeight: 600 }}>✓ Inspection Complete</span>
+        <span style={{ fontSize: 13, color: report?.status === 'COMPLETED' ? '#22c55e' : '#f59e0b', fontWeight: 600 }}>{report?.status === 'COMPLETED' ? '✓ Inspection Complete' : 'Analysis incomplete · Draft report'}</span>
       </div>
     </div>
   );

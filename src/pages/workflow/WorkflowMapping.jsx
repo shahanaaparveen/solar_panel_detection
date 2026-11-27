@@ -1,75 +1,112 @@
 import { useState, useEffect } from 'react';
-import { ChevronLeft, ChevronRight, ArrowRight, Loader } from 'lucide-react';
-import { detectAndNumberPanels } from '../../utils/panelDetection';
+import { ChevronLeft, ChevronRight, ArrowRight } from 'lucide-react';
+import { getPanels, getFindings, registerImages, getProjectImageObjectUrl } from '../../api';
 
-export default function WorkflowMapping({ project, onUpdateProject, onNext }) {
-  const [thermalUrls, setThermalUrls] = useState([]);
+function PanelOverlay({ src, panels, imageSize, selectedPanel, onSelect }) {
+  const width = imageSize?.width || 1;
+  const height = imageSize?.height || 1;
+  return (
+    <div style={{ position: 'relative', width: '100%', height: 240, background: '#000', borderRadius: 7, overflow: 'hidden' }}>
+      <img src={src} alt="Localized solar panels" style={{ width: '100%', height: '100%', objectFit: 'contain', display: 'block' }} />
+      <svg viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="xMidYMid meet" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
+        {(panels || []).map(panel => {
+          const { x1, y1, x2, y2 } = panel.bbox;
+          return <g key={panel.panel_id} onClick={() => onSelect(panel.panel_id)} style={{ pointerEvents: 'all', cursor: 'pointer' }}><rect x={x1} y={y1} width={x2 - x1} height={y2 - y1} fill={selectedPanel === panel.panel_id ? 'rgba(16,185,129,0.30)' : 'rgba(99,102,241,0.12)'} stroke={selectedPanel === panel.panel_id ? '#34d399' : '#a5b4fc'} strokeWidth={Math.max(2, width / 800)} /><text x={(x1 + x2) / 2} y={(y1 + y2) / 2} fill="#fff" stroke="#111827" strokeWidth={Math.max(2, width / 600)} paintOrder="stroke" textAnchor="middle" dominantBaseline="middle" fontSize={Math.max(14, width / 45)} fontWeight="700">{panel.panel_id}</text></g>;
+        })}
+      </svg>
+    </div>
+  );
+}
+
+export default function WorkflowMapping({ project, onNext }) {
   const [thermalIdx, setThermalIdx] = useState(0);
-  const [rgbResults, setRgbResults] = useState(project.rgbResults || []);
+  const [rgbResults, setRgbResults] = useState([]);
   const [rgbIdx, setRgbIdx] = useState(0);
-  const [processing, setProcessing] = useState(false);
-  const [processedCount, setProcessedCount] = useState(0);
+  const [findings, setFindings] = useState([]);
+  const [selectedPanel, setSelectedPanel] = useState(null);
+  const [registration, setRegistration] = useState(null);
+  const [registering, setRegistering] = useState(false);
+  const [panelsLoading, setPanelsLoading] = useState(true);
+  const [thermalUrl, setThermalUrl] = useState('');
+  const [rgbUrl, setRgbUrl] = useState('');
 
   useEffect(() => {
-    const created = (project.thermalFiles || []).map(f => URL.createObjectURL(f));
-    setThermalUrls(created); setThermalIdx(0);
-    return () => created.forEach(u => URL.revokeObjectURL(u));
-  }, [project.thermalFiles]);
+    if (!project._id) return;
+    setPanelsLoading(true);
+    getPanels(project._id).then(setRgbResults).catch(() => setRgbResults([])).finally(() => setPanelsLoading(false));
+    getFindings(project._id, project.jobId).then(setFindings).catch(() => setFindings([]));
+  }, [project._id, project.jobId]);
+  useEffect(() => {
+    setRegistration(null);
+    setSelectedPanel(null);
+  }, [rgbIdx, thermalIdx]);
 
   useEffect(() => {
-    if (!project.rgbFiles?.length || project.rgbResults?.length) return;
-    let cancelled = false;
-    setProcessing(true); setProcessedCount(0);
-    (async () => {
-      const results = [];
-      for (let i = 0; i < project.rgbFiles.length; i++) {
-        if (cancelled) break;
-        const res = await detectAndNumberPanels(project.rgbFiles[i]);
-        results.push({ ...res, fileName: project.rgbFiles[i].name });
-        if (!cancelled) setProcessedCount(i + 1);
-      }
-      if (!cancelled) {
-        setRgbResults(results);
-        onUpdateProject({ ...project, rgbResults: results });
-        setProcessing(false);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [project.rgbFiles]);
+    const image = project.thermalImages?.[thermalIdx];
+    let disposed = false;
+    let objectUrl;
+    setThermalUrl('');
+    if (project._id && image?.imageId) getProjectImageObjectUrl(project._id, image.imageId).then(url => {
+      if (disposed) URL.revokeObjectURL(url);
+      else { objectUrl = url; setThermalUrl(url); }
+    }).catch(() => setThermalUrl(''));
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [project._id, project.thermalImages, thermalIdx]);
 
-  const hasThermal = thermalUrls.length > 0;
-  const hasRgb = rgbResults.length > 0;
+  useEffect(() => {
+    const image = rgbResults[rgbIdx];
+    let disposed = false;
+    let objectUrl;
+    setRgbUrl('');
+    if (project._id && image?.imageId) getProjectImageObjectUrl(project._id, image.imageId).then(url => {
+      if (disposed) URL.revokeObjectURL(url);
+      else { objectUrl = url; setRgbUrl(url); }
+    }).catch(() => setRgbUrl(''));
+    return () => { disposed = true; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [project._id, rgbResults, rgbIdx]);
+
+  const thermalImages = project.thermalImages || [];
+  const rgbImages = project.rgbImages || [];
+  const hasThermal = thermalImages.length > 0;
   const cur = rgbResults[rgbIdx];
-  const totalPanels = rgbResults.reduce((s, r) => s + r.panels.length, 0);
-
-  // Defect summary table (mock per panel — real data comes from AI model)
-  const defectRows = (project.thermalFiles || []).slice(0, 6).map((f, i) => ({
-    thermal: f.name,
-    panel: cur?.panels[i]?.id ? `Panel-${String(cur.panels[i].id).padStart(2,'0')}` : '—',
-    defect: ['Hotspot', 'Bird Droppings', 'Loose Connection', 'Reverse Bias', 'Leaf Shading', 'Cracked Cell'][i % 6],
-    confidence: [92, 88, 91, 87, 85, 93][i % 6],
-    severity: ['High', 'Low', 'High', 'High', 'Low', 'High'][i % 6],
-  }));
+  const hasRgb = cur?.status === 'COMPLETED';
+  const totalPanels = rgbResults.reduce((s, r) => s + (r.panels?.length || 0), 0);
+  const defectRows = selectedPanel ? findings.filter(row => row.panelId === selectedPanel) : findings;
+  const registerCurrentPair = async () => {
+    const rgbImage = rgbImages.find(image => image.imageId === cur?.imageId);
+    const thermalImage = thermalImages[thermalIdx];
+    if (!rgbImage || !thermalImage) return;
+    setRegistering(true);
+    try {
+      const result = await registerImages(project._id, rgbImage.imageId, thermalImage.imageId);
+      setRegistration(result);
+      getFindings(project._id, project.jobId).then(setFindings).catch(() => {});
+    } catch (error) {
+      setRegistration({ status: 'UNREGISTERED', reason: error.response?.data?.detail || 'Registration request failed' });
+    } finally {
+      setRegistering(false);
+    }
+  };
 
   return (
     <div>
       <div style={s.pageTitle}>Panel Mapping</div>
-      <div style={s.pageSub}>Each thermal defect mapped to its corresponding numbered RGB panel</div>
+      <div style={s.pageSub}>Panel localization is model-backed. Cross-modal matches require verified image registration.</div>
 
       <div style={s.mapGrid}>
         {/* Thermal */}
         <div style={s.card}>
           <div style={s.cardHead}>
             <span style={s.cardTitle}>Thermal Image</span>
-            {hasThermal && <span style={s.counter}>{thermalIdx + 1}/{thermalUrls.length}</span>}
+            {hasThermal && <span style={s.counter}>{thermalImages.length} images</span>}
           </div>
           {hasThermal ? (
             <>
-              <img src={thermalUrls[thermalIdx]} alt="" style={s.mapImg} />
+              {thermalUrl ? <img src={thermalUrl} alt={thermalImages[thermalIdx].imageName} style={s.mapImg} /> : <div style={s.emptyBox}>Loading protected image…</div>}
               <div style={s.navRow}>
                 <button style={s.btnNav} disabled={thermalIdx === 0} onClick={() => setThermalIdx(i => i - 1)}><ChevronLeft size={12} /> Prev</button>
-                <span style={s.navName}>{project.thermalFiles[thermalIdx]?.name}</span>
-                <button style={s.btnNav} disabled={thermalIdx === thermalUrls.length - 1} onClick={() => setThermalIdx(i => i + 1)}>Next <ChevronRight size={12} /></button>
+                <span style={s.navName}>{thermalImages[thermalIdx].imageName}</span>
+                <button style={s.btnNav} disabled={thermalIdx === thermalImages.length - 1} onClick={() => setThermalIdx(i => i + 1)}>Next <ChevronRight size={12} /></button>
               </div>
             </>
           ) : <div style={s.emptyBox}>No thermal images</div>}
@@ -79,50 +116,44 @@ export default function WorkflowMapping({ project, onUpdateProject, onNext }) {
         <div style={s.arrowCol}>
           <div style={s.arrowLine} />
           <span style={s.arrowText}>→</span>
+          <button style={s.btnNav} disabled={!cur || !thermalImages.length || registering} onClick={registerCurrentPair}>{registering ? 'Aligning…' : 'Align pair'}</button>
+          {registration && <span style={{ ...s.counter, color: registration.status === 'REGISTERED' ? '#10b981' : '#f59e0b', textAlign: 'center' }}>{registration.status}{registration.quality != null ? ` · ${Math.round(registration.quality * 100)}%` : ''}</span>}
         </div>
 
         {/* RGB numbered */}
         <div style={s.card}>
           <div style={s.cardHead}>
             <span style={s.cardTitle}>Numbered RGB Image</span>
-            {hasRgb && <span style={{ ...s.counter, color: '#10b981' }}>{cur?.panels.length} panels</span>}
+            {cur?.status === 'COMPLETED' && <span style={{ ...s.counter, color: '#10b981' }}>{cur.panels?.length || 0} panels</span>}
           </div>
-          {processing ? (
-            <div style={s.processingBox}>
-              <Loader size={24} color="#6366f1" style={{ animation: 'spin 1s linear infinite' }} />
-              <div style={{ fontSize: 13, color: '#94a3b8', marginTop: 10 }}>Detecting panels... ({processedCount}/{project.rgbFiles?.length})</div>
-              <div style={{ width: '70%', marginTop: 10 }}>
-                <div style={s.progressBar}><div style={{ ...s.progressFill, width: `${(processedCount / (project.rgbFiles?.length || 1)) * 100}%` }} /></div>
-              </div>
-            </div>
-          ) : hasRgb ? (
+          {hasRgb ? (
             <>
-              <img src={cur.dataURL} alt="" style={s.mapImg} />
+              {rgbUrl && <PanelOverlay src={rgbUrl} panels={cur.panels} imageSize={cur.imageSize} selectedPanel={selectedPanel} onSelect={setSelectedPanel} />}
               <div style={s.navRow}>
                 <button style={s.btnNav} disabled={rgbIdx === 0} onClick={() => setRgbIdx(i => i - 1)}><ChevronLeft size={12} /> Prev</button>
-                <span style={s.navName}>{cur.fileName} · Panels 1–{cur.panels.length}</span>
+                <span style={s.navName}>{cur.panels?.length || 0} localized panels</span>
                 <button style={s.btnNav} disabled={rgbIdx === rgbResults.length - 1} onClick={() => setRgbIdx(i => i + 1)}>Next <ChevronRight size={12} /></button>
               </div>
             </>
-          ) : <div style={s.emptyBox}>No RGB images uploaded</div>}
+          ) : <div style={s.emptyBox}>{!rgbImages.length ? 'No RGB images uploaded' : panelsLoading ? 'Loading saved panel results…' : cur ? (cur.message || `Panel model status: ${cur.status}`) : 'No panel result yet; run analysis first.'}</div>}
         </div>
       </div>
 
       {/* Defect summary table */}
       <div style={s.tableCard}>
-        <div style={s.cardTitle2}>Defect Summary Table</div>
+        <div style={{ ...s.cardTitle2, display: 'flex', justifyContent: 'space-between' }}><span>Finding Observations</span>{selectedPanel && <button style={s.btnNav} onClick={() => setSelectedPanel(null)}>Clear panel filter · {selectedPanel}</button>}</div>
         <table style={s.table}>
           <thead>
-            <tr>{['Thermal Image', 'Mapped Panel', 'Defect Type', 'Confidence', 'Severity'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+            <tr>{['Modality', 'Mapped Panel', 'Defect Type', 'Confidence', 'Inspection Priority'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {defectRows.length > 0 ? defectRows.map((r, i) => (
               <tr key={i}>
-                <td style={s.td}>{r.thermal}</td>
-                <td style={s.td}><span style={s.panelBadge}>{r.panel}</span></td>
-                <td style={s.td}>{r.defect}</td>
-                <td style={{ ...s.td, color: '#10b981', fontWeight: 600 }}>{r.confidence}%</td>
-                <td style={s.td}><span style={{ ...s.sevBadge, ...(r.severity === 'High' ? s.sevHigh : s.sevLow) }}>{r.severity}</span></td>
+                <td style={s.td}>{r.modality}</td>
+                <td style={s.td}><span style={s.panelBadge}>{r.panelId || r.matchStatus}</span></td>
+                <td style={s.td}>{r.defectType}</td>
+                <td style={{ ...s.td, color: '#10b981', fontWeight: 600 }}>{Math.round((r.modelConfidence || 0) * 100)}%</td>
+                <td style={s.td}><span style={{ ...s.sevBadge, ...(r.inspectionPriority === 'High' ? s.sevHigh : s.sevLow) }}>{r.inspectionPriority || 'Unassigned'} · severity unvalidated{r.reviewRequired ? ' · Review' : ''}</span></td>
               </tr>
             )) : (
               <tr><td colSpan={5} style={{ ...s.td, textAlign: 'center', color: '#475569' }}>No defect data yet</td></tr>
@@ -135,7 +166,6 @@ export default function WorkflowMapping({ project, onUpdateProject, onNext }) {
         <span style={{ fontSize: 13, color: '#64748b' }}>Total panels detected: <strong style={{ color: '#e2e8f0' }}>{totalPanels}</strong></span>
         <button style={s.btnNext} onClick={onNext}>Next — Defect Summary <ArrowRight size={14} /></button>
       </div>
-      <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   );
 }

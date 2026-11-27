@@ -19,7 +19,7 @@ const steps = [
 export default function WorkflowLayout({ project, step, onStepChange, onUpdateProject, onBackToProjects }) {
   const renderStep = () => {
     switch (step) {
-      case 1: return <WorkflowUpload project={project} onNext={(t, r) => { onUpdateProject({ ...project, thermalFiles: t, rgbFiles: r }); onStepChange(2); }} />;
+      case 1: return <WorkflowUpload project={project} onNext={(t, r, records) => { onUpdateProject({ ...project, thermalFiles: t, rgbFiles: r, ...records }); onStepChange(2); }} />;
       case 2: return <WorkflowAnalysis project={project} onNext={() => onStepChange(3)} />;
       case 3: return <WorkflowMapping project={project} onUpdateProject={onUpdateProject} onNext={() => onStepChange(4)} />;
       case 4: return <WorkflowSummary project={project} onNext={() => onStepChange(5)} />;
