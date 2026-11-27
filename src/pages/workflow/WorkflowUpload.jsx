@@ -1,6 +1,6 @@
 import { useRef, useState, useEffect } from 'react';
 import { FolderOpen, CheckCircle, X, Image, ArrowRight, Loader } from 'lucide-react';
-import { uploadImages, analyzeImages } from '../../api';
+import { uploadImages, analyzeImages, getAnalysisJob } from '../../api';
 
 function UploadSection({ label, files, setFiles, done, setDone }) {
   const fileRef   = useRef();
@@ -105,37 +105,46 @@ export default function WorkflowUpload({ project, onNext }) {
   const [rgbDone, setRgbDone]           = useState(false);
   const [submitting, setSubmitting]     = useState(false);
   const [statusMsg, setStatusMsg]       = useState('');
+  const [error, setError] = useState('');
+  const requestIdRef = useRef(null);
 
   const canNext = thermalFiles.length > 0 || rgbFiles.length > 0;
 
   const handleConfirm = async () => {
     setSubmitting(true);
+    setError('');
     const projectId = project._id;
 
     try {
       // Upload thermal images to backend
+      let thermalImages = [];
+      let rgbImages = [];
       if (thermalFiles.length > 0) {
         setStatusMsg(`Uploading ${thermalFiles.length} thermal images...`);
-        await uploadImages(projectId, 'thermal', thermalFiles);
+        thermalImages = (await uploadImages(projectId, 'thermal', thermalFiles)).images;
       }
 
       // Upload RGB images to backend
       if (rgbFiles.length > 0) {
         setStatusMsg(`Uploading ${rgbFiles.length} RGB images...`);
-        await uploadImages(projectId, 'rgb', rgbFiles);
+        rgbImages = (await uploadImages(projectId, 'rgb', rgbFiles)).images;
       }
 
       // Trigger analysis on backend
       setStatusMsg('Running defect detection...');
-      await analyzeImages(projectId);
-
+      if (!requestIdRef.current) requestIdRef.current = globalThis.crypto?.randomUUID?.() || `${Date.now()}-${projectId}`;
+      let job = await analyzeImages(projectId, requestIdRef.current);
+      while (job.status === 'PENDING' || job.status === 'PROCESSING') {
+        setStatusMsg(`Analyzing images... ${job.percentage || 0}%`);
+        await new Promise(resolve => setTimeout(resolve, 700));
+        job = await getAnalysisJob(projectId, job.jobId);
+      }
       setStatusMsg('');
-      onNext(thermalFiles, rgbFiles);
+      onNext(thermalFiles, rgbFiles, { thermalImages, rgbImages, jobId: job.jobId });
+      requestIdRef.current = null;
     } catch (err) {
-      // Backend not running — proceed with local files only
-      console.warn('Backend unavailable, using local files:', err.message);
+      setError(err.response?.data?.detail || err.message || 'Upload or analysis failed.');
       setStatusMsg('');
-      onNext(thermalFiles, rgbFiles);
     }
 
     setSubmitting(false);
@@ -170,6 +179,7 @@ export default function WorkflowUpload({ project, onNext }) {
           {submitting ? <><Loader size={14} style={{ animation: 'spin 1s linear infinite' }} /> Processing...</> : <>Confirm & Continue <ArrowRight size={14} /></>}
         </button>
       </div>
+      {error && <div role="alert" style={{ color: '#b91c1c', marginTop: 14, fontSize: 13 }}>{error}</div>}
       <style>{`@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}`}</style>
     </div>
   );

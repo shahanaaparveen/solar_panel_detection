@@ -1,8 +1,32 @@
-import { useState } from 'react';
-import { ArrowRight, Edit2, Save, Download, FileText } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ArrowRight, Edit2, Save, Download } from 'lucide-react';
+import { getFindings, getPanels, saveReport, getProjectImageObjectUrl } from '../../api';
 
 export default function WorkflowReportPreview({ project, onUpdateProject, onNext }) {
   const [editing, setEditing] = useState(false);
+  const [findings, setFindings] = useState([]);
+  const [panelObservations, setPanelObservations] = useState(0);
+  const [saveError, setSaveError] = useState('');
+  const [evidenceUrls, setEvidenceUrls] = useState({});
+  useEffect(() => {
+    if (!project._id) return;
+    getFindings(project._id, project.jobId).then(setFindings).catch(() => setFindings([]));
+    getPanels(project._id).then(rows => setPanelObservations(rows.reduce((n, row) => n + (row.panels?.length || 0), 0))).catch(() => setPanelObservations(0));
+  }, [project._id, project.jobId]);
+  useEffect(() => {
+    let disposed = false;
+    const urls = [];
+    const imageIds = [...new Set(findings.flatMap(finding => (finding.evidence || []).map(item => item.imageId).filter(Boolean)))];
+    Promise.allSettled(imageIds.map(async imageId => {
+      const url = await getProjectImageObjectUrl(project._id, imageId);
+      urls.push([imageId, url]);
+    })).then(results => {
+      if (disposed) urls.forEach(([, url]) => URL.revokeObjectURL(url));
+      else setEvidenceUrls(Object.fromEntries(urls));
+      if (results.some(result => result.status === 'rejected')) return;
+    });
+    return () => { disposed = true; urls.forEach(([, url]) => URL.revokeObjectURL(url)); };
+  }, [project._id, findings]);
   const [info, setInfo] = useState({
     companyName:    project.companyName    || '',
     projectName:    project.projectName   || '',
@@ -12,24 +36,19 @@ export default function WorkflowReportPreview({ project, onUpdateProject, onNext
     notes:          project.notes         || '',
   });
 
-  const save = () => {
-    onUpdateProject({ ...project, ...info, status: 'Completed' });
-    setEditing(false);
+  const save = async () => {
+    try {
+      const report = await saveReport(project._id, { title: `${info.projectName} Inspection Report`, notes: info.notes, jobId: project.jobId, metadata: info });
+      onUpdateProject({ ...project, ...info, reportId: report._id,
+        status: report.status === 'COMPLETED' ? 'Completed' : 'Analysis Incomplete' });
+      setSaveError('');
+      setEditing(false);
+    } catch (error) {
+      setSaveError(error.response?.data?.detail || 'Could not save the report.');
+    }
   };
 
-  const totalPanels  = project.rgbResults?.reduce((s, r) => s + r.panels.length, 0) || 0;
-  const defective    = 11;
-  const healthy      = Math.max(0, totalPanels - defective);
-  const healthRate   = totalPanels > 0 ? ((healthy / totalPanels) * 100).toFixed(1) : '—';
-
-  const defectRows = [
-    { panel: 'Panel-03', defect: 'Hotspot',          severity: 'High',   conf: 92, rec: 'Immediate replacement' },
-    { panel: 'Panel-07', defect: 'Bird Droppings',   severity: 'Low',    conf: 88, rec: 'Clean surface' },
-    { panel: 'Panel-12', defect: 'Loose Connection', severity: 'High',   conf: 91, rec: 'Re-tighten connections' },
-    { panel: 'Panel-18', defect: 'Reverse Bias',     severity: 'High',   conf: 87, rec: 'Replace bypass diode' },
-    { panel: 'Panel-24', defect: 'Leaf Shading',     severity: 'Low',    conf: 85, rec: 'Remove obstruction' },
-    { panel: 'Panel-31', defect: 'Cracked Cell',     severity: 'High',   conf: 93, rec: 'Replace panel' },
-  ];
+  const printPdf = () => window.print();
 
   return (
     <div>
@@ -39,11 +58,11 @@ export default function WorkflowReportPreview({ project, onUpdateProject, onNext
           <div style={s.pageSub}>Review and edit before exporting</div>
         </div>
         <div style={{ display: 'flex', gap: 10 }}>
+          {!editing && <button style={s.btnSave} onClick={save}><Save size={13} /> Save Report</button>}
           {editing
             ? <button style={s.btnSave} onClick={save}><Save size={13} /> Save</button>
             : <button style={s.btnEdit} onClick={() => setEditing(true)}><Edit2 size={13} /> Edit</button>}
-          <button style={s.btnPdf}><Download size={13} /> Export PDF</button>
-          <button style={s.btnWord}><FileText size={13} /> Export Word</button>
+          <button style={s.btnPdf} onClick={printPdf}><Download size={13} /> Print / Save PDF</button>
         </div>
       </div>
 
@@ -78,10 +97,10 @@ export default function WorkflowReportPreview({ project, onUpdateProject, onNext
         {/* Stats */}
         <div style={s.statsRow}>
           {[
-            { label: 'Total Panels',     value: totalPanels || '—', color: '#1e293b' },
-            { label: 'Healthy Panels',   value: totalPanels ? healthy : '—', color: '#15803d' },
-            { label: 'Defective Panels', value: defective,  color: '#dc2626' },
-            { label: 'Health Rate',      value: totalPanels ? `${healthRate}%` : '—', color: '#15803d' },
+            { label: 'Panel Observations', value: panelObservations || '—', color: '#1e293b' },
+            { label: 'Healthy Panels',   value: '—', color: '#15803d' },
+            { label: 'Finding Observations', value: findings.length, color: '#dc2626' },
+            { label: 'Health Rate',      value: '—', color: '#15803d' },
           ].map(st => (
             <div key={st.label} style={s.statBox}>
               <div style={{ ...s.statVal, color: st.color }}>{st.value}</div>
@@ -94,18 +113,20 @@ export default function WorkflowReportPreview({ project, onUpdateProject, onNext
         <div style={s.sectionTitle}>Defect Details</div>
         <table style={s.table}>
           <thead style={{ background: '#f1f5f9' }}>
-            <tr>{['Panel No.', 'Defect Type', 'Severity', 'Confidence', 'Recommendation'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
+            <tr>{['Panel No.', 'Defect Type', 'Inspection Priority', 'Confidence', 'Review / Recommendation', 'Evidence'].map(h => <th key={h} style={s.th}>{h}</th>)}</tr>
           </thead>
           <tbody>
-            {defectRows.map((r, i) => (
+            {findings.map((r, i) => (
               <tr key={i} style={{ background: i % 2 === 0 ? '#fff' : '#f8fafc' }}>
-                <td style={s.td}><strong>{r.panel}</strong></td>
-                <td style={s.td}>{r.defect}</td>
-                <td style={s.td}><span style={{ color: r.severity === 'High' ? '#dc2626' : '#16a34a', fontWeight: 700 }}>{r.severity}</span></td>
-                <td style={{ ...s.td, color: '#059669', fontWeight: 600 }}>{r.conf}%</td>
-                <td style={{ ...s.td, color: '#475569' }}>{r.rec}</td>
+                <td style={s.td}><strong>{r.panelId || 'Unassigned'}</strong></td>
+                <td style={s.td}>{r.defectType} · {r.modality}</td>
+                <td style={s.td}><span style={{ color: r.inspectionPriority === 'High' ? '#dc2626' : '#475569', fontWeight: 700 }}>{r.inspectionPriority || 'Unassigned'} · severity unvalidated</span></td>
+                <td style={{ ...s.td, color: '#059669', fontWeight: 600 }}>{Math.round((r.modelConfidence || 0) * 100)}%</td>
+                <td style={{ ...s.td, color: '#475569' }}>{r.recommendation}{r.reviewRequired ? ' · Review required' : ''}</td>
+                <td style={s.td}>{evidenceUrls[r.evidence?.[0]?.imageId] ? <img src={evidenceUrls[r.evidence[0].imageId]} alt={`${r.defectType} evidence`} style={{ width: 84, height: 54, objectFit: 'cover' }} /> : '—'}</td>
               </tr>
             ))}
+            {!findings.length && <tr><td colSpan={6} style={s.td}>No model findings are available for this project.</td></tr>}
           </tbody>
         </table>
 
@@ -118,9 +139,10 @@ export default function WorkflowReportPreview({ project, onUpdateProject, onNext
       </div>
 
       <div style={s.footer}>
-        <span style={{ fontSize: 13, color: '#64748b' }}>Report ready for export</span>
+        <span style={{ fontSize: 13, color: '#64748b' }}>Report observations are suspected; severity has not been validated.</span>
         <button style={s.btnNext} onClick={onNext}>Finish — View Reports <ArrowRight size={14} /></button>
       </div>
+      {saveError && <div role="alert" style={{ color: '#b91c1c', marginTop: 12, fontSize: 13 }}>{saveError}</div>}
     </div>
   );
 }
