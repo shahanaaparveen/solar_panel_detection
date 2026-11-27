@@ -43,6 +43,13 @@ export const getDetections    = (projectId, imageType, jobId) =>
 export const getPanels        = (projectId) => api.get(`/projects/${projectId}/panels`).then(r => r.data);
 export const getFindings      = (projectId, jobId) => api.get(`/projects/${projectId}/findings`, { params: jobId ? { job_id: jobId } : {} }).then(r => r.data);
 export const registerImages   = (projectId, rgbImageId, thermalImageId) => api.post(`/projects/${projectId}/registration`, null, { params: { reference_image_id: rgbImageId, moving_image_id: thermalImageId } }).then(r => r.data);
+export const autoRegisterImages = (projectId, options = {}) => api.post(`/projects/${projectId}/registration/auto`, options).then(r => r.data);
+export const getRegistrationOverview = (projectId) => api.get(`/projects/${projectId}/registration`).then(r => r.data);
+export const analyzeProjectMapping = (projectId, options = {}) => api.post(`/projects/${projectId}/mapping/analyze`, options).then(r => r.data);
+export const getProjectMapping = (projectId, jobId) => api.get(`/projects/${projectId}/mapping`, { params: jobId ? { job_id: jobId } : {} }).then(r => r.data);
+export const getMappingQuality = (projectId, jobId) => api.get(`/projects/${projectId}/mapping/quality`, { params: jobId ? { job_id: jobId } : {} }).then(r => r.data);
+export const analyzeProjectAssociation = (projectId, options = {}) => api.post(`/projects/${projectId}/association/analyze`, options).then(r => r.data);
+export const getAssociationSummary = (projectId, jobId) => api.get(`/projects/${projectId}/association/summary`, { params: jobId ? { job_id: jobId } : {} }).then(r => r.data);
 export const getModelReadiness = () => api.get('/models/readiness').then(r => r.data);
 
 // ── Reports ───────────────────────────────────────────────────────────────

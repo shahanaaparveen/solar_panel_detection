@@ -1,25 +1,30 @@
 import { useEffect, useState } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid } from 'recharts';
-import { getFindings, getPanels } from '../../api';
+import { getAssociationSummary, getFindings, getPanels } from '../../api';
 
 const tt = { contentStyle: { background: '#111827', border: '1px solid #1e2d45', borderRadius: 8, color: '#e2e8f0', fontSize: 12 } };
 
 export default function WorkflowSummary({ project, onNext }) {
   const [findings, setFindings] = useState([]);
   const [panels, setPanels] = useState([]);
+  const [summaryData, setSummaryData] = useState(null);
   useEffect(() => {
     if (!project._id) return;
     getFindings(project._id, project.jobId).then(setFindings).catch(() => setFindings([]));
     getPanels(project._id).then(setPanels).catch(() => setPanels([]));
+    getAssociationSummary(project._id, project.jobId).then(setSummaryData).catch(() => setSummaryData(null));
   }, [project._id, project.jobId]);
   const colors = ['#ef4444', '#f59e0b', '#3b82f6', '#8b5cf6', '#10b981', '#06b6d4', '#ec4899'];
   const counts = findings.reduce((all, finding) => ({ ...all, [finding.defectType]: (all[finding.defectType] || 0) + 1 }), {});
   const defectTypes = Object.entries(counts).map(([name, value], i) => ({ name, value, color: colors[i % colors.length] }));
   const priorityColors = { High: '#ef4444', Medium: '#f59e0b', Low: '#10b981' };
   const priorityData = ['High', 'Medium', 'Low'].map(name => ({ name, value: findings.filter(f => f.inspectionPriority === name).length, color: priorityColors[name] })).filter(d => d.value > 0);
-  const totalPanels = panels.reduce((total, row) => total + (row.panels?.length || 0), 0);
-  const affectedFindings = findings.length;
+  const aggSummary = summaryData?.panelAggregation?.summary;
+  const totalPanels = aggSummary?.total_panels ?? panels.reduce((total, row) => total + (row.panels?.length || 0), 0);
+  const healthyPanels = aggSummary?.healthy_panels ?? '—';
+  const healthRate = aggSummary?.health_rate != null ? `${aggSummary.health_rate}%` : '—';
+  const affectedFindings = aggSummary?.consolidated_finding_count ?? findings.length;
 
   return (
     <div>
@@ -30,9 +35,9 @@ export default function WorkflowSummary({ project, onNext }) {
       <div style={s.statsRow}>
         {[
           { label: 'Total Panels',     value: totalPanels || '—', color: '#e2e8f0' },
-          { label: 'Healthy Panels',   value: '—', color: '#22c55e' },
+          { label: 'Healthy Panels',   value: healthyPanels, color: '#22c55e' },
           { label: 'Finding Observations', value: affectedFindings, color: '#ef4444' },
-          { label: 'Health Rate',      value: '—', color: '#22c55e' },
+          { label: 'Health Rate',      value: healthRate, color: '#22c55e' },
         ].map(st => (
           <div key={st.label} style={s.statCard}>
             <div style={{ ...s.statVal, color: st.color }}>{st.value}</div>

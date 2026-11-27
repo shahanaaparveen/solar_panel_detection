@@ -18,18 +18,17 @@ from PIL import Image
 
 from database import (projects_col, detections_col, reports_col, jobs_col,
                       panels_col, findings_col, images_col, registrations_col, model_runs_col,
-                      client as mongo_client, index_errors, storage_mode, storage_error)
+                      mappings_col, client as mongo_client, index_errors, storage_mode, storage_error)
 from vision.models.model_registry import registry
 from vision.preprocessing.image_loader import load_image
 from vision.inference.panel_detector import detect_panels
 from vision.inference.inference_pipeline import analyze_image
 from vision.models.model_registry import ModelUnavailable, ModelLoadError
-from vision.association.spatial_matching import associate_defect
-from vision.risk.severity_engine import assess_finding
-from vision.registration.image_alignment import align_images
+from vision.mapping.coordinate_transform import transform_bbox as _transform_box
 from vision.inference.job_processor import process_analysis as process_job
 from auth import (authorized_project_ids, auth_status, get_current_user, is_admin,
                   project_filter, require_project_access)
+from routers import association as association_router, mapping as mapping_router, registration as registration_router
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 logger = logging.getLogger("solar_inspect")
@@ -43,6 +42,9 @@ async def lifespan(_app):
 
 app = FastAPI(title="Solar Inspect API", version="2.0.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173,http://localhost:3000,http://127.0.0.1:3000").split(","), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(mapping_router.router)
+app.include_router(registration_router.router)
+app.include_router(association_router.router)
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "uploads")).resolve()
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
@@ -99,19 +101,6 @@ def project_view(doc):
         result[field] = [{key: value for key, value in image.items() if key != "_id"}
                          for image in stored_images if image.get("imageType") == image_type]
     return serialize(result)
-
-
-def _transform_box(box, matrix):
-    x1,y1,x2,y2 = (box[k] for k in ("x1", "y1", "x2", "y2"))
-    mapped=[]
-    for x,y in ((x1,y1),(x2,y1),(x2,y2),(x1,y2)):
-        denominator = matrix[2][0]*x + matrix[2][1]*y + matrix[2][2]
-        if abs(denominator) < 1e-9:
-            return None
-        mapped.append(((matrix[0][0]*x + matrix[0][1]*y + matrix[0][2])/denominator,
-                       (matrix[1][0]*x + matrix[1][1]*y + matrix[1][2])/denominator))
-    return {"x1": min(p[0] for p in mapped), "y1": min(p[1] for p in mapped),
-            "x2": max(p[0] for p in mapped), "y2": max(p[1] for p in mapped)}
 
 
 @app.get("/api/health")
@@ -372,56 +361,6 @@ def get_findings(project_id: str, job_id: str | None = None):
     if job_id:
         query["jobId"] = job_id
     return serialize_many(list(findings_col.find(query).sort("createdAt", -1)))
-
-
-@app.post("/api/projects/{project_id}/registration", dependencies=[Depends(require_project_access)])
-def register_images(project_id: str, reference_image_id: str, moving_image_id: str):
-    images = {row["imageId"]: row for row in images_col.find({"projectId": project_id, "imageId": {"$in": [reference_image_id, moving_image_id]}})}
-    if len(images) != 2:
-        raise HTTPException(404, "Both project images must exist")
-    if {row["imageType"] for row in images.values()} != {"rgb", "thermal"}:
-        raise HTTPException(422, "Registration requires one RGB image and one thermal image")
-    rgb = next(row for row in images.values() if row["imageType"] == "rgb")
-    thermal = next(row for row in images.values() if row["imageType"] == "thermal")
-    try:
-        result = align_images(UPLOAD_DIR / rgb["path"], UPLOAD_DIR / thermal["path"])
-    except Exception:
-        logger.exception("Image registration failed for project %s", project_id)
-        result = {"status": "UNREGISTERED", "reason": "Registration processing failed"}
-    record = {"projectId": project_id, "referenceImageId": rgb["imageId"], "movingImageId": thermal["imageId"],
-              "referenceModality": "rgb", "movingModality": "thermal", **result, "createdAt": now()}
-    associated = 0
-    if result.get("status") == "REGISTERED":
-        panels = panels_col.find_one({"projectId": project_id, "imageId": rgb["imageId"], "status": "COMPLETED"})
-        thermal_run = detections_col.find_one({"projectId": project_id, "imageId": thermal["imageId"], "imageType": "thermal", "status": "COMPLETED"}, sort=[("analyzedAt", -1)])
-        if panels and thermal_run:
-            for detection in thermal_run.get("detections", []):
-                transformed = _transform_box(detection["bbox"], result["transform"])
-                if transformed is None:
-                    continue
-                match = associate_defect({"bbox": transformed}, panels.get("panels", []))
-                risk = assess_finding(detection["label"], detection["confidence"], match.get("spatial_match_confidence"))
-                query = {"projectId": project_id, "jobId": thermal_run["jobId"], "modality": "thermal",
-                         "evidence.imageId": thermal["imageId"], "evidence.bbox": detection["bbox"]}
-                update = {"panelId": match.get("panel_id"), "matchStatus": match["match_status"],
-                          "spatialMatchConfidence": match.get("spatial_match_confidence"),
-                          "candidatePanelIds": match.get("candidate_panel_ids", []),
-                          "inspectionPriority": risk["inspection_priority"],
-                          "priorityRule": risk["priority_rule"],
-                          "priorityExplanation": risk["priority_explanation"],
-                          "reviewRequired": risk["review_required"] or match["match_status"] != "MATCHED",
-                          "registrationId": f"{rgb['imageId']}:{thermal['imageId']}"}
-                changed = findings_col.update_one(query, {"$set": update})
-                associated += changed.modified_count
-    record["associatedFindings"] = associated
-    registrations_col.replace_one({"projectId": project_id, "referenceImageId": rgb["imageId"], "movingImageId": thermal["imageId"]}, record, upsert=True)
-    record.pop("_id", None)
-    return record
-
-
-@app.get("/api/projects/{project_id}/registrations", dependencies=[Depends(require_project_access)])
-def get_registrations(project_id: str):
-    return serialize_many(list(registrations_col.find({"projectId": project_id}).sort("createdAt", -1)))
 
 
 @app.post("/api/projects/{project_id}/report", dependencies=[Depends(require_project_access)])

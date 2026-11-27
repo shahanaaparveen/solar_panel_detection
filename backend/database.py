@@ -27,6 +27,7 @@ findings_col = db["findings"]
 images_col = db["images"]
 registrations_col = db["image_registrations"]
 model_runs_col = db["model_runs"]
+mappings_col = db["panel_mappings"]
 
 logger = logging.getLogger("solar_inspect.database")
 index_errors = {}
@@ -42,6 +43,7 @@ index_specs = [
     (images_col, [("projectId", 1), ("imageType", 1), ("sha256", 1)], {"unique": True, "partialFilterExpression": {"sha256": {"$exists": True}}, "name": "project_image_hash_unique"}),
     (registrations_col, [("projectId", 1), ("referenceImageId", 1), ("movingImageId", 1)], {"unique": True, "name": "registration_pair_unique"}),
     (model_runs_col, [("modelRunId", 1)], {"unique": True, "name": "model_run_unique"}),
+    (mappings_col, [("projectId", 1)], {"unique": True, "name": "project_mapping_unique"}),
 ]
 for collection, keys, options in index_specs:
     try:
